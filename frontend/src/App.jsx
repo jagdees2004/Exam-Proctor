@@ -200,6 +200,7 @@ function App() {
 
     // ── Monitoring Loop ────────────────────────────────────────────────────
     const inFlightRef = useRef(false);
+    const tickRef = useRef(0); // Add a tick counter to stagger heavy requests
 
     const startMonitoring = useCallback(() => {
         if (intervalRef.current) clearInterval(intervalRef.current);
@@ -208,6 +209,7 @@ function App() {
             // Skip if previous request is still in flight (prevents stacking)
             if (inFlightRef.current) return;
             inFlightRef.current = true;
+            tickRef.current += 1;
 
             try {
                 const blob = await captureFrame();
@@ -222,25 +224,28 @@ function App() {
                     return;
                 }
 
-                // Fire face + objects + audio requests ALL IN PARALLEL
+                // Fire face + audio requests every tick (1.5s)
                 const formData = new FormData();
                 formData.append('user_id', userId.trim());
                 formData.append('file', blob, 'frame.jpg');
-
-                // Need a second copy of the blob for objects endpoint
-                const objForm = new FormData();
-                objForm.append('user_id', userId.trim());
-                objForm.append('file', blob, 'frame.jpg');
 
                 const facePromise = fetch(`${API_BASE}/exam/verify`, {
                     method: 'POST',
                     body: formData,
                 }).then(r => r.json()).catch(() => null);
 
-                const objectsPromise = fetch(`${API_BASE}/exam/objects`, {
-                    method: 'POST',
-                    body: objForm,
-                }).then(r => r.json()).catch(() => null);
+                // Run heavy object detection every 3rd tick (~4.5s) to prevent backend OOM
+                let objectsPromise = Promise.resolve(null);
+                if (tickRef.current % 3 === 0) {
+                    const objForm = new FormData();
+                    objForm.append('user_id', userId.trim());
+                    objForm.append('file', blob, 'frame.jpg');
+
+                    objectsPromise = fetch(`${API_BASE}/exam/objects`, {
+                        method: 'POST',
+                        body: objForm,
+                    }).then(r => r.json()).catch(() => null);
+                }
 
                 let audioPromise = Promise.resolve(null);
                 if (audioBufferRef.current.length > 0) {
