@@ -51,6 +51,7 @@ function App() {
     const canvasRef = useRef(null);
     const streamRef = useRef(null);
     const intervalRef = useRef(null);
+    const wsRef = useRef(null); // WebSocket connection for real-time AI
     const audioContextRef = useRef(null);
     const audioBufferRef = useRef([]); // accumulates raw Float32 PCM samples
 
@@ -115,9 +116,7 @@ function App() {
             return 'dark'; // Frame is too dark — camera blocked
         }
 
-        return new Promise((resolve) => {
-            canvas.toBlob((blob) => resolve(blob), 'image/jpeg', 0.85);
-        });
+        return canvas.toDataURL('image/jpeg', 0.85);
     }, []);
 
     // ── Register Face ──────────────────────────────────────────────────────
@@ -134,7 +133,14 @@ function App() {
         setPhase('registering');
         setMessage('📸 Capturing your face…');
 
-        const blob = await captureFrame();
+        const b64 = await captureFrame();
+
+        let blob = null;
+        if (b64 && b64 !== 'dark') {
+            const res = await fetch(b64);
+            blob = await res.blob();
+        }
+
         console.log('[Proctor] Captured blob:', blob, 'size:', blob?.size);
 
         if (!blob || blob.size === 0) {
@@ -199,123 +205,153 @@ function App() {
     };
 
     // ── Monitoring Loop ────────────────────────────────────────────────────
-    const inFlightRef = useRef(false);
-    const tickRef = useRef(0); // Add a tick counter to stagger heavy requests
-
+    // ── Monitoring Loop (WebSocket) ────────────────────────────────────────
     const startMonitoring = useCallback(() => {
-        if (intervalRef.current) clearInterval(intervalRef.current);
+        // Build WS URL
+        const wsUrl = API_BASE
+            ? API_BASE.replace(/^http/, 'ws') + `/exam/ws/${userId.trim()}`
+            : `ws://${window.location.host}/exam/ws/${userId.trim()}`;
 
-        intervalRef.current = setInterval(async () => {
-            // Skip if previous request is still in flight (prevents stacking)
-            if (inFlightRef.current) return;
-            inFlightRef.current = true;
-            tickRef.current += 1;
+        const ws = new WebSocket(wsUrl);
+        wsRef.current = ws;
 
+        let isActive = true;
+        let isProcessingFrame = false;
+
+        ws.onopen = () => {
+            console.log('[WS] Connected for real-time AI');
+            // Trigger first frame
+            sendFrame();
+        };
+
+        ws.onmessage = (event) => {
+            if (!isActive) return;
             try {
-                const blob = await captureFrame();
-                if (!blob) return;
+                const data = JSON.parse(event.data);
 
-                // Camera blocked detected client-side
-                if (blob === 'dark') {
-                    setStatus('flagged');
-                    setMessage('🚨 CAMERA BLOCKED — Your camera appears to be covered or off.');
-                    setStats(prev => prev ? { ...prev, status: 'camera_blocked', flagged: true } : prev);
-                    addFlag('Camera blocked / off');
-                    return;
-                }
+                if (data.type === 'video_result') {
+                    // Handle face/object result
+                    setStats(prev => ({
+                        ...prev,
+                        ...data
+                    }));
 
-                // Fire face + audio requests every tick (1.5s)
-                const formData = new FormData();
-                formData.append('user_id', userId.trim());
-                formData.append('file', blob, 'frame.jpg');
-
-                const facePromise = fetch(`${API_BASE}/exam/verify`, {
-                    method: 'POST',
-                    body: formData,
-                }).then(r => r.json()).catch(() => null);
-
-                // Run object detection EVERY tick now (since tick is 5s)
-                const objForm = new FormData();
-                objForm.append('user_id', userId.trim());
-                objForm.append('file', blob, 'frame.jpg');
-
-                const objectsPromise = fetch(`${API_BASE}/exam/objects`, {
-                    method: 'POST',
-                    body: objForm,
-                }).then(r => r.json()).catch(() => null);
-
-                let audioPromise = Promise.resolve(null);
-                if (audioBufferRef.current.length > 0) {
-                    const chunks = audioBufferRef.current;
-                    audioBufferRef.current = [];
-                    const totalLen = chunks.reduce((sum, c) => sum + c.length, 0);
-                    const merged = new Float32Array(totalLen);
-                    let offset = 0;
-                    for (const chunk of chunks) {
-                        merged.set(chunk, offset);
-                        offset += chunk.length;
-                    }
-                    const wavBuffer = encodeWav(merged, audioContextRef.current?.sampleRate || 16000);
-                    const wavBlob = new Blob([wavBuffer], { type: 'audio/wav' });
-                    const audioForm = new FormData();
-                    audioForm.append('user_id', userId.trim());
-                    audioForm.append('audio', wavBlob, 'chunk.wav');
-                    audioPromise = fetch(`${API_BASE}/exam/audio`, {
-                        method: 'POST',
-                        body: audioForm,
-                    }).then(r => r.json()).catch(() => null);
-                }
-
-                const [faceData, objData, audioData] = await Promise.all([facePromise, objectsPromise, audioPromise]);
-
-                // Handle face result
-                if (faceData) {
-                    setStats(prev => ({ ...prev, ...faceData, forbidden_objects: objData?.forbidden_objects || [] }));
-                    if (faceData.flagged) {
-                        if (faceData.status === 'multiple_faces') {
+                    if (data.flagged) {
+                        if (data.status === 'multiple_faces') {
                             setStatus('flagged');
-                            setMessage(`🚨 MULTIPLE FACES DETECTED (${faceData.face_count} faces)`);
-                            addFlag(`Multiple faces: ${faceData.face_count}`);
-                        } else if (faceData.status === 'camera_blocked') {
+                            setMessage(`🚨 MULTIPLE FACES DETECTED (${data.face_count} faces)`);
+                            addFlag(`Multiple faces: ${data.face_count}`);
+                        } else if (data.status === 'camera_blocked') {
                             setStatus('flagged');
                             setMessage('🚨 CAMERA BLOCKED — Your camera appears to be covered or off.');
                             addFlag('Camera blocked / off');
-                        } else if (faceData.status === 'no_face') {
+                        } else if (data.status === 'no_face') {
                             setStatus('no_face');
                             setMessage('⚠ No face detected. Please look at the camera.');
                             addFlag('No face detected');
-                        } else if (faceData.status === 'identity_mismatch') {
+                        } else if (data.status === 'identity_mismatch') {
                             setStatus('flagged');
                             setMessage('🚨 IDENTITY MISMATCH — Face does not match registered user.');
                             addFlag('Identity mismatch');
+                        } else if (data.forbidden_objects?.length > 0) {
+                            const objects = data.forbidden_objects.map((o) => o.class_name).join(', ');
+                            setStatus('flagged');
+                            setMessage(`🚨 FORBIDDEN OBJECT DETECTED: ${objects}`);
+                            addFlag(`Forbidden object: ${objects}`);
                         }
                     } else {
                         setStatus('ok');
                         setMessage('✅ Verified — You are being monitored.');
                     }
-                }
 
-                // Handle object detection result (overrides face status if objects found)
-                if (objData?.flagged && objData.forbidden_objects?.length > 0) {
-                    const objects = objData.forbidden_objects.map((o) => o.class_name).join(', ');
-                    setStatus('flagged');
-                    setMessage(`🚨 FORBIDDEN OBJECT DETECTED: ${objects}`);
-                    addFlag(`Forbidden object: ${objects}`);
+                    // Frame processed, wait a bit then send next
+                    isProcessingFrame = false;
+                    setTimeout(sendFrame, 1500); // 1.5-second self-pacing delay
                 }
-
-                // Handle audio result
-                if (audioData) {
-                    setAudioStatus(audioData);
-                    if (audioData.is_talking) {
+                else if (data.type === 'audio_result') {
+                    setAudioStatus(data);
+                    if (data.is_talking) {
                         setStatus('flagged');
                         setMessage(`🚨 SPEECH DETECTED — Talking is not allowed during the exam.`);
-                        addFlag(`Speech detected (${(audioData.speech_prob * 100).toFixed(0)}%)`);
+                        addFlag(`Speech detected (${(data.speech_prob * 100).toFixed(0)}%)`);
                     }
                 }
-            } finally {
-                inFlightRef.current = false;
+            } catch (err) {
+                console.error('[WS] parse error', err);
+                isProcessingFrame = false;
             }
-        }, 5000); // Changed from 1500 to 5000 to prevent queuing on free tier
+        };
+
+        ws.onerror = (err) => {
+            console.error('[WS] Error', err);
+            isProcessingFrame = false;
+        };
+
+        ws.onclose = () => {
+            console.log('[WS] Disconnected');
+            isActive = false;
+        };
+
+        const sendFrame = async () => {
+            if (!isActive || ws.readyState !== WebSocket.OPEN) return;
+            if (isProcessingFrame) return;
+            isProcessingFrame = true;
+
+            try {
+                const b64 = await captureFrame();
+                if (!b64) {
+                    isProcessingFrame = false;
+                    setTimeout(sendFrame, 1000);
+                    return;
+                }
+
+                if (b64 === 'dark') {
+                    setStatus('flagged');
+                    setMessage('🚨 CAMERA BLOCKED — Your camera appears to be covered or off.');
+                    setStats(prev => prev ? { ...prev, status: 'camera_blocked', flagged: true } : prev);
+                    addFlag('Camera blocked / off');
+                    isProcessingFrame = false;
+                    setTimeout(sendFrame, 1500);
+                    return;
+                }
+
+                ws.send(JSON.stringify({ type: 'frame', data: b64 }));
+
+            } catch (err) {
+                console.error('[WS] send frame error', err);
+                isProcessingFrame = false;
+            }
+        };
+
+        // Audio interval (every 3s)
+        if (intervalRef.current) clearInterval(intervalRef.current);
+        intervalRef.current = setInterval(() => {
+            if (!isActive || ws.readyState !== WebSocket.OPEN) return;
+
+            if (audioBufferRef.current.length > 0) {
+                const chunks = audioBufferRef.current;
+                audioBufferRef.current = [];
+                const totalLen = chunks.reduce((sum, c) => sum + c.length, 0);
+                const merged = new Float32Array(totalLen);
+                let offset = 0;
+                for (const chunk of chunks) {
+                    merged.set(chunk, offset);
+                    offset += chunk.length;
+                }
+                const wavBuffer = encodeWav(merged, audioContextRef.current?.sampleRate || 16000);
+
+                // Convert ArrayBuffer to base64
+                let binary = '';
+                const bytes = new Uint8Array(wavBuffer);
+                const len = bytes.byteLength;
+                for (let i = 0; i < len; i++) {
+                    binary += String.fromCharCode(bytes[i]);
+                }
+                const b64Audio = window.btoa(binary);
+
+                ws.send(JSON.stringify({ type: 'audio', data: b64Audio }));
+            }
+        }, 3000);
 
     }, [userId, captureFrame]);
 
@@ -329,6 +365,10 @@ function App() {
 
     // ── Stop Exam ──────────────────────────────────────────────────────────
     const handleStop = () => {
+        if (wsRef.current) {
+            wsRef.current.close();
+            wsRef.current = null;
+        }
         if (intervalRef.current) clearInterval(intervalRef.current);
         audioBufferRef.current = [];
         setPhase('setup');
