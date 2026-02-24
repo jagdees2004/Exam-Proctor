@@ -234,18 +234,15 @@ function App() {
                     body: formData,
                 }).then(r => r.json()).catch(() => null);
 
-                // Run heavy object detection every 3rd tick (~4.5s) to prevent backend OOM
-                let objectsPromise = Promise.resolve(null);
-                if (tickRef.current % 3 === 0) {
-                    const objForm = new FormData();
-                    objForm.append('user_id', userId.trim());
-                    objForm.append('file', blob, 'frame.jpg');
+                // Run object detection EVERY tick now (since tick is 5s)
+                const objForm = new FormData();
+                objForm.append('user_id', userId.trim());
+                objForm.append('file', blob, 'frame.jpg');
 
-                    objectsPromise = fetch(`${API_BASE}/exam/objects`, {
-                        method: 'POST',
-                        body: objForm,
-                    }).then(r => r.json()).catch(() => null);
-                }
+                const objectsPromise = fetch(`${API_BASE}/exam/objects`, {
+                    method: 'POST',
+                    body: objForm,
+                }).then(r => r.json()).catch(() => null);
 
                 let audioPromise = Promise.resolve(null);
                 if (audioBufferRef.current.length > 0) {
@@ -318,7 +315,7 @@ function App() {
             } finally {
                 inFlightRef.current = false;
             }
-        }, 1500);
+        }, 5000); // Changed from 1500 to 5000 to prevent queuing on free tier
 
     }, [userId, captureFrame]);
 
