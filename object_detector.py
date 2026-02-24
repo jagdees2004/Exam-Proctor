@@ -31,7 +31,7 @@ FORBIDDEN_CLASSES: dict[int, str] = {
 # Detection thresholds — lowered for INT8 quantized model
 CONFIDENCE_THRESHOLD = 0.2   # Lower threshold to catch more objects (INT8 outputs lower scores)
 NMS_THRESHOLD = 0.45
-INPUT_SIZE = 640
+INPUT_SIZE = 320
 
 
 @dataclass
