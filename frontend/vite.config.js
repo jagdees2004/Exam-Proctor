@@ -7,7 +7,10 @@ export default defineConfig({
     port: 3000,
     open: true,
     proxy: {
-      '/exam': 'http://localhost:8000',
+      '/exam': {
+        target: 'http://localhost:8000',
+        ws: true,
+      },
       '/health': 'http://localhost:8000',
     },
   },
