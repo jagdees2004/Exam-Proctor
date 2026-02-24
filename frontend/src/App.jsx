@@ -207,10 +207,18 @@ function App() {
     // ── Monitoring Loop ────────────────────────────────────────────────────
     // ── Monitoring Loop (WebSocket) ────────────────────────────────────────
     const startMonitoring = useCallback(() => {
-        // Build WS URL
-        const wsUrl = API_BASE
-            ? API_BASE.replace(/^http/, 'ws') + `/exam/ws/${userId.trim()}`
-            : `ws://${window.location.host}/exam/ws/${userId.trim()}`;
+        // Build WS URL robustly for both local (Vite proxy) and production (Render)
+        let wsUrl;
+        if (API_BASE) {
+            // Production: convert https://... to wss://...
+            const wsProtocol = API_BASE.startsWith('https') ? 'wss' : 'ws';
+            const cleanBase = API_BASE.replace(/^https?:\/\//, '');
+            wsUrl = `${wsProtocol}://${cleanBase}/exam/ws/${userId.trim()}`;
+        } else {
+            // Local dev: connect to same host/port (Vite proxy will forward it to 8000)
+            const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+            wsUrl = `${wsProtocol}//${window.location.host}/exam/ws/${userId.trim()}`;
+        }
 
         const ws = new WebSocket(wsUrl);
         wsRef.current = ws;
