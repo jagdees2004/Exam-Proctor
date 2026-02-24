@@ -207,7 +207,7 @@ function App() {
     // ── Monitoring Loop ────────────────────────────────────────────────────
     // ── Monitoring Loop (WebSocket) ────────────────────────────────────────
     const startMonitoring = useCallback(() => {
-        // Build WS URL robustly for both local (Vite proxy) and production (Render)
+        // Build WS URL robustly for both local (Vite proxy) 
         let wsUrl;
         if (API_BASE) {
             // Production: convert https://... to wss://...
@@ -307,6 +307,7 @@ function App() {
 
             try {
                 const b64 = await captureFrame();
+
                 if (!b64) {
                     isProcessingFrame = false;
                     setTimeout(sendFrame, 1000);
@@ -328,6 +329,7 @@ function App() {
             } catch (err) {
                 console.error('[WS] send frame error', err);
                 isProcessingFrame = false;
+                setTimeout(sendFrame, 1500);
             }
         };
 
