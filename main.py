@@ -201,6 +201,11 @@ async def exam_ws(websocket: WebSocket, user_id: str):
                         continue
 
                     print(f"[WS] Processing frame: {img.shape} for user {user_id}")
+                    
+                    # Debug: log to file so we don't lose output during reload
+                    with open("ws_debug.log", "a") as f:
+                        f.write(f"\n[WS] Processing frame: {img.shape} for user {user_id}\n")
+                        f.write(f"[WS] User registered: {engine.is_registered(user_id)}\n")
 
                     # Face verification
                     face_result = engine.verify_face(img, user_id)
@@ -230,6 +235,10 @@ async def exam_ws(websocket: WebSocket, user_id: str):
                     import traceback
                     traceback.print_exc()
                     print(f"[WS] Frame processing error: {frame_err}")
+                    # Log to file for debugging
+                    with open("ws_debug.log", "a") as f:
+                        f.write(f"\n[WS] FRAME ERROR: {frame_err}\n")
+                        traceback.print_exc(file=f)
                     # Still send a response so the frontend doesn't deadlock
                     await websocket.send_json({
                         "type": "video_result",
