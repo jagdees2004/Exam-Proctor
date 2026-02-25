@@ -16,7 +16,7 @@ from dataclasses import dataclass
 MODELS_DIR = Path(__file__).parent / "models"
 
 YUNET_MODEL = str(MODELS_DIR / "face_detection_yunet_2023mar.onnx")
-FACE_REC_MODEL = str(MODELS_DIR / "mobilefacenet.onnx")
+FACE_REC_MODEL = str(MODELS_DIR / "mobilefacenet_int8.onnx")
 
 # ── Thresholds ───────────────────────────────────────────────────────────────
 FACE_SCORE_THRESHOLD = 0.6       # YuNet detection confidence
