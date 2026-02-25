@@ -1,7 +1,0 @@
-INPUTS:
-input shape=[None, None] type=tensor(float)
-state shape=[2, None, 128] type=tensor(float)
-sr shape=[] type=tensor(int64)
-OUTPUTS:
-output shape=[None, 1] type=tensor(float)
-stateN shape=[None, None, None] type=tensor(float)
