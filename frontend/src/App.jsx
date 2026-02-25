@@ -46,6 +46,7 @@ function App() {
     const [flagLog, setFlagLog] = useState([]);
     const [cameraReady, setCameraReady] = useState(false);
     const [audioStatus, setAudioStatus] = useState(null); // { is_talking, speech_prob }
+    const [tabSwitchCount, setTabSwitchCount] = useState(0);
 
     const videoRef = useRef(null);
     const canvasRef = useRef(null);
@@ -83,6 +84,54 @@ function App() {
             if (audioContextRef.current) audioContextRef.current.close();
         };
     }, []);
+
+    // ── Tab / Window Switch Detection ───────────────────────────────────
+    useEffect(() => {
+        let leaveTime = null;
+
+        const handleVisibilityChange = () => {
+            if (document.hidden && phase === 'monitoring') {
+                leaveTime = Date.now();
+                console.log('[Proctor] ⚠ Tab switched away');
+            } else if (!document.hidden && phase === 'monitoring' && leaveTime) {
+                const awaySeconds = ((Date.now() - leaveTime) / 1000).toFixed(1);
+                leaveTime = null;
+                setTabSwitchCount(prev => prev + 1);
+                setStatus('flagged');
+                setMessage(`🚨 TAB SWITCH DETECTED — You left for ${awaySeconds}s`);
+                addFlag(`Tab/window switch (away ${awaySeconds}s)`);
+            }
+        };
+
+        const handleWindowBlur = () => {
+            if (phase === 'monitoring' && !document.hidden) {
+                // Window lost focus but tab didn't change (e.g., alt-tab to another app)
+                leaveTime = Date.now();
+                console.log('[Proctor] ⚠ Window lost focus');
+            }
+        };
+
+        const handleWindowFocus = () => {
+            if (phase === 'monitoring' && leaveTime) {
+                const awaySeconds = ((Date.now() - leaveTime) / 1000).toFixed(1);
+                leaveTime = null;
+                setTabSwitchCount(prev => prev + 1);
+                setStatus('flagged');
+                setMessage(`🚨 WINDOW SWITCH DETECTED — You left for ${awaySeconds}s`);
+                addFlag(`Window switch (away ${awaySeconds}s)`);
+            }
+        };
+
+        document.addEventListener('visibilitychange', handleVisibilityChange);
+        window.addEventListener('blur', handleWindowBlur);
+        window.addEventListener('focus', handleWindowFocus);
+
+        return () => {
+            document.removeEventListener('visibilitychange', handleVisibilityChange);
+            window.removeEventListener('blur', handleWindowBlur);
+            window.removeEventListener('focus', handleWindowFocus);
+        };
+    }, [phase, addFlag]);
 
     // ── Capture Frame ──────────────────────────────────────────────────────
     const captureFrame = useCallback(() => {
@@ -385,6 +434,7 @@ function App() {
         setStatus('idle');
         setStats(null);
         setAudioStatus(null);
+        setTabSwitchCount(0);
         setMessage('Exam ended. Enter your ID to start a new session.');
     };
 
@@ -521,6 +571,12 @@ function App() {
                                                 ? `🚨 Speech (${(audioStatus.speech_prob * 100).toFixed(0)}%)`
                                                 : `Silent (${(audioStatus.speech_prob * 100).toFixed(0)}%)`
                                             : 'Listening...'}
+                                    </span>
+                                </div>
+                                <div className="stat">
+                                    <span className="stat-label">🔀 Tab Switches</span>
+                                    <span className={`stat-value ${tabSwitchCount > 0 ? 'bad' : 'good'}`}>
+                                        {tabSwitchCount}
                                     </span>
                                 </div>
                             </div>
