@@ -178,60 +178,96 @@ async def exam_ws(websocket: WebSocket, user_id: str):
             msg_type = message.get("type")
 
             if msg_type == "frame":
-                b64_data = message.get("data", "")
-                if "," in b64_data:
-                    b64_data = b64_data.split(",")[1]
-                
-                img_bytes = base64.b64decode(b64_data)
-                np_arr = np.frombuffer(img_bytes, np.uint8)
-                img = cv2.imdecode(np_arr, cv2.IMREAD_COLOR)
-                
-                if img is None:
-                    continue
+                try:
+                    b64_data = message.get("data", "")
+                    if "," in b64_data:
+                        b64_data = b64_data.split(",")[1]
+                    
+                    img_bytes = base64.b64decode(b64_data)
+                    np_arr = np.frombuffer(img_bytes, np.uint8)
+                    img = cv2.imdecode(np_arr, cv2.IMREAD_COLOR)
+                    
+                    if img is None:
+                        print(f"[WS] Failed to decode image, sending fallback response")
+                        await websocket.send_json({
+                            "type": "video_result",
+                            "identity_match": False,
+                            "face_count": 0,
+                            "similarity_score": 0.0,
+                            "status": "no_face",
+                            "forbidden_objects": [],
+                            "flagged": True,
+                        })
+                        continue
 
-                # Face verification
-                face_result = engine.verify_face(img, user_id)
-                face_flagged = face_result.status in ("no_face", "multiple_faces", "identity_mismatch", "camera_blocked")
+                    print(f"[WS] Processing frame: {img.shape} for user {user_id}")
 
-                # Object detection
-                detections = detector.detect(img)
-                forbidden = [
-                    {"class_name": d.class_name, "confidence": d.confidence}
-                    for d in detections
-                ]
-                obj_flagged = len(forbidden) > 0
+                    # Face verification
+                    face_result = engine.verify_face(img, user_id)
+                    face_flagged = face_result.status in ("no_face", "multiple_faces", "identity_mismatch", "camera_blocked")
 
-                response = {
-                    "type": "video_result",
-                    "identity_match": face_result.identity_match,
-                    "face_count": face_result.face_count,
-                    "similarity_score": face_result.similarity_score,
-                    "status": "camera_blocked" if face_result.status == "camera_blocked" else face_result.status,
-                    "forbidden_objects": forbidden,
-                    "flagged": face_flagged or obj_flagged,
-                }
-                await websocket.send_json(response)
+                    # Object detection
+                    detections = detector.detect(img)
+                    forbidden = [
+                        {"class_name": d.class_name, "confidence": d.confidence}
+                        for d in detections
+                    ]
+                    obj_flagged = len(forbidden) > 0
+
+                    response = {
+                        "type": "video_result",
+                        "identity_match": face_result.identity_match,
+                        "face_count": face_result.face_count,
+                        "similarity_score": face_result.similarity_score,
+                        "status": "camera_blocked" if face_result.status == "camera_blocked" else face_result.status,
+                        "forbidden_objects": forbidden,
+                        "flagged": face_flagged or obj_flagged,
+                    }
+                    print(f"[WS] Sending response: status={response['status']}, flagged={response['flagged']}")
+                    await websocket.send_json(response)
+
+                except Exception as frame_err:
+                    import traceback
+                    traceback.print_exc()
+                    print(f"[WS] Frame processing error: {frame_err}")
+                    # Still send a response so the frontend doesn't deadlock
+                    await websocket.send_json({
+                        "type": "video_result",
+                        "identity_match": False,
+                        "face_count": 0,
+                        "similarity_score": 0.0,
+                        "status": "error",
+                        "forbidden_objects": [],
+                        "flagged": False,
+                    })
 
             elif msg_type == "audio":
-                b64_data = message.get("data", "")
-                if "," in b64_data:
-                    b64_data = b64_data.split(",")[1]
-                    
-                audio_bytes = base64.b64decode(b64_data)
-                if len(audio_bytes) > 0:
-                    result = audio_detector.detect_speech(audio_bytes)
-                    response = {
-                        "type": "audio_result",
-                        "is_talking": result["is_talking"],
-                        "speech_prob": result["speech_prob"],
-                        "flagged": result["flagged"]
-                    }
-                    await websocket.send_json(response)
+                try:
+                    b64_data = message.get("data", "")
+                    if "," in b64_data:
+                        b64_data = b64_data.split(",")[1]
+                        
+                    audio_bytes = base64.b64decode(b64_data)
+                    if len(audio_bytes) > 0:
+                        result = audio_detector.detect_speech(audio_bytes)
+                        response = {
+                            "type": "audio_result",
+                            "is_talking": result["is_talking"],
+                            "speech_prob": result["speech_prob"],
+                            "flagged": result["flagged"]
+                        }
+                        await websocket.send_json(response)
+                except Exception as audio_err:
+                    import traceback
+                    traceback.print_exc()
+                    print(f"[WS] Audio processing error: {audio_err}")
 
     except WebSocketDisconnect:
         print(f"[WS] Client disconnected: {user_id}")
     except Exception as e:
-        print(f"[WS] Error: {e}")
+        import traceback
+        traceback.print_exc()
+        print(f"[WS] Fatal error: {e}")
 
 
 if __name__ == "__main__":
