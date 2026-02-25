@@ -35,7 +35,7 @@ A **production-ready, ultra-lightweight** AI-powered exam proctoring system that
 │                      REACT FRONTEND                          │
 │  ┌──────────┐  ┌───────────┐  ┌───────────────────────────┐ │
 │  │ Webcam   │→ │ Canvas    │→ │ Base64 JPEG → WebSocket   │ │
-│  │ Stream   │  │ Capture   │  │ Self-pacing loop (1.5s)   │ │
+│  │ Stream   │  │ Capture   │  │ Self-pacing loop    │ │
 │  └──────────┘  └───────────┘  └────────────┬──────────────┘ │
 │  ┌──────────┐                              │                 │
 │  │ Audio    │→ WAV encode → base64 ────────┤                 │
