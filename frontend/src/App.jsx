@@ -85,6 +85,14 @@ function App() {
         };
     }, []);
 
+    const addFlag = useCallback((reason) => {
+        const entry = {
+            time: new Date().toLocaleTimeString(),
+            reason,
+        };
+        setFlagLog((prev) => [entry, ...prev].slice(0, 20));
+    }, []);
+
     // ── Tab / Window Switch Detection ───────────────────────────────────
     useEffect(() => {
         let leaveTime = null;
@@ -413,14 +421,6 @@ function App() {
         }, 3000);
 
     }, [userId, captureFrame]);
-
-    const addFlag = useCallback((reason) => {
-        const entry = {
-            time: new Date().toLocaleTimeString(),
-            reason,
-        };
-        setFlagLog((prev) => [entry, ...prev].slice(0, 20));
-    }, []);
 
     // ── Stop Exam ──────────────────────────────────────────────────────────
     const handleStop = () => {
