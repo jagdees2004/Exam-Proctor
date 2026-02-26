@@ -171,6 +171,8 @@ async def exam_ws(websocket: WebSocket, user_id: str):
     """
     await websocket.accept()
     print(f"\n[WS] Client connected: {user_id}")
+    frame_count = 0
+    last_forbidden = []  # Cache object detections across frames
     try:
         while True:
             data = await websocket.receive_text()
@@ -200,18 +202,21 @@ async def exam_ws(websocket: WebSocket, user_id: str):
                         })
                         continue
 
-                    print(f"[WS] Processing frame: {img.shape} for user {user_id}")
+                    frame_count += 1
+                    print(f"[WS] Frame #{frame_count}: {img.shape} for user {user_id}")
 
-                    # Face verification
+                    # Face verification (every frame — fast ~50ms)
                     face_result = engine.verify_face(img, user_id)
                     face_flagged = face_result.status in ("no_face", "multiple_faces", "identity_mismatch", "camera_blocked")
 
-                    # Object detection
-                    detections = detector.detect(img)
-                    forbidden = [
-                        {"class_name": d.class_name, "confidence": d.confidence}
-                        for d in detections
-                    ]
+                    # Object detection (every 3rd frame — slow ~2-15s on CPU)
+                    if frame_count % 3 == 1:
+                        detections = detector.detect(img)
+                        last_forbidden = [
+                            {"class_name": d.class_name, "confidence": d.confidence}
+                            for d in detections
+                        ]
+                    forbidden = last_forbidden
                     obj_flagged = len(forbidden) > 0
 
                     response = {
