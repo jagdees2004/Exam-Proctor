@@ -1,10 +1,7 @@
 """
-object_detector.py — Lightweight YOLOv8n INT8 ONNX object detector.
+object_detector.py — YOLOv8n ONNX object detector with letterbox preprocessing.
 
-Uses onnxruntime for inference (cv2.dnn can't load dynamically quantized
-ONNX models with DynamicQuantizeLinear nodes).
-
-Scans frames for forbidden objects during exams:
+Uses onnxruntime for inference. Scans frames for forbidden objects during exams:
   - COCO class 62: tv / monitor / tablet
   - COCO class 63: laptop
   - COCO class 67: cell phone
@@ -18,7 +15,11 @@ from pathlib import Path
 from dataclasses import dataclass
 
 MODELS_DIR = Path(__file__).parent / "models"
-YOLO_MODEL = str(MODELS_DIR / "yolov8n_int8.onnx")
+
+# Try FP32 model first (better quality), fall back to INT8
+_FP32_MODEL = MODELS_DIR / "yolov8n.onnx"
+_INT8_MODEL = MODELS_DIR / "yolov8n_int8.onnx"
+YOLO_MODEL = str(_FP32_MODEL if _FP32_MODEL.exists() else _INT8_MODEL)
 
 # ── COCO class mapping (only the ones we care about) ─────────────────────────
 FORBIDDEN_CLASSES: dict[int, str] = {
@@ -28,10 +29,10 @@ FORBIDDEN_CLASSES: dict[int, str] = {
     74: "clock/watch",
 }
 
-# Detection thresholds — lowered for INT8 quantized model
-CONFIDENCE_THRESHOLD = 0.2   # Lower threshold to catch more objects (INT8 outputs lower scores)
+# Detection thresholds
+CONFIDENCE_THRESHOLD = 0.15   # Low threshold for INT8 (outputs lower scores)
 NMS_THRESHOLD = 0.45
-INPUT_SIZE = 640  # INT8 ONNX model has fixed 640x640 input shape
+INPUT_SIZE = 640
 
 
 @dataclass
@@ -45,7 +46,7 @@ class Detection:
 
 class ObjectDetector:
     """
-    YOLOv8n INT8 ONNX object detector using onnxruntime.
+    YOLOv8n ONNX object detector using onnxruntime.
 
     Only reports detections for forbidden exam objects
     (phones, laptops, monitors, watches/clocks).
@@ -57,7 +58,18 @@ class ObjectDetector:
             providers=["CPUExecutionProvider"],
         )
         self._input_name = self._session.get_inputs()[0].name
-        print("[ObjectDetector] Loaded YOLOv8n INT8 ONNX model (onnxruntime)")
+
+        # Read actual input size from model
+        inp_shape = self._session.get_inputs()[0].shape
+        if isinstance(inp_shape[2], int) and isinstance(inp_shape[3], int):
+            self._input_h = inp_shape[2]
+            self._input_w = inp_shape[3]
+        else:
+            self._input_h = INPUT_SIZE
+            self._input_w = INPUT_SIZE
+
+        print(f"[ObjectDetector] Loaded {Path(YOLO_MODEL).name} "
+              f"(input: {self._input_w}x{self._input_h})")
 
     def detect(self, frame: np.ndarray) -> list[Detection]:
         """
@@ -68,65 +80,64 @@ class ObjectDetector:
         """
         h_orig, w_orig = frame.shape[:2]
 
-        # ── Preprocess ───────────────────────────────────────────────────
-        # Letterbox resize to maintain aspect ratio
-        blob = self._preprocess(frame)
+        # ── Preprocess with letterbox ────────────────────────────────────
+        blob, ratio, (pad_w, pad_h) = self._letterbox(frame)
 
         # ── Forward pass ─────────────────────────────────────────────────
         outputs = self._session.run(None, {self._input_name: blob})
 
-        # YOLOv8 output shape: (1, 84, 8400) → transpose to (8400, 84)
-        predictions = outputs[0][0].T  # (8400, 84)
+        # YOLOv8 output shape: (1, 84, N) → transpose to (N, 84)
+        predictions = outputs[0][0].T
 
         # ── Postprocess ──────────────────────────────────────────────────
         boxes_raw = predictions[:, :4]      # cx, cy, w, h
         class_scores = predictions[:, 4:]   # 80 class scores
 
-        # FIRST filter: only keep detections for our forbidden classes
-        # This avoids false positives from other classes leaking through
-        forbidden_mask = np.zeros(len(predictions), dtype=bool)
-        for cls_id in FORBIDDEN_CLASSES:
-            cls_scores = class_scores[:, cls_id]
-            forbidden_mask |= (cls_scores > CONFIDENCE_THRESHOLD)
+        # Extract scores ONLY for forbidden classes
+        forbidden_ids = list(FORBIDDEN_CLASSES.keys())
+        forbidden_scores = class_scores[:, forbidden_ids]  # (N, 4)
 
-        if not np.any(forbidden_mask):
+        # Best forbidden class per detection
+        best_idx = np.argmax(forbidden_scores, axis=1)
+        best_conf = forbidden_scores[np.arange(len(best_idx)), best_idx]
+
+        # Keep only detections above threshold
+        valid = best_conf > CONFIDENCE_THRESHOLD
+
+        # Debug: log top forbidden scores every call
+        if len(best_conf) > 0:
+            top_score = best_conf.max()
+            top_idx = best_idx[best_conf.argmax()]
+            top_name = FORBIDDEN_CLASSES[forbidden_ids[top_idx]]
+            n_above = valid.sum()
+            print(f"  [ObjectDetect] Top forbidden: {top_name}={top_score:.3f}, "
+                  f"{n_above} detections above {CONFIDENCE_THRESHOLD}")
+
+        if not np.any(valid):
             return []
 
-        # Apply forbidden-class pre-filter
-        boxes_filtered = boxes_raw[forbidden_mask]
-        scores_filtered = class_scores[forbidden_mask]
+        boxes_valid = boxes_raw[valid]
+        class_ids = np.array([forbidden_ids[i] for i in best_idx[valid]])
+        confidences = best_conf[valid]
 
-        # Get best class per remaining detection
-        class_ids = np.argmax(scores_filtered, axis=1)
-        confidences = scores_filtered[np.arange(len(class_ids)), class_ids]
+        # Convert cx,cy,w,h → x,y,w,h (top-left corner) in letterboxed coords
+        boxes = np.zeros_like(boxes_valid)
+        boxes[:, 0] = boxes_valid[:, 0] - boxes_valid[:, 2] / 2
+        boxes[:, 1] = boxes_valid[:, 1] - boxes_valid[:, 3] / 2
+        boxes[:, 2] = boxes_valid[:, 2]
+        boxes[:, 3] = boxes_valid[:, 3]
 
-        # Only keep if best class IS a forbidden class AND above threshold
-        final_mask = np.array([
-            int(cid) in FORBIDDEN_CLASSES and conf > CONFIDENCE_THRESHOLD
-            for cid, conf in zip(class_ids, confidences)
-        ], dtype=bool)
+        # Undo letterbox: remove padding then scale back to original size
+        boxes[:, 0] = (boxes[:, 0] - pad_w) / ratio
+        boxes[:, 1] = (boxes[:, 1] - pad_h) / ratio
+        boxes[:, 2] = boxes[:, 2] / ratio
+        boxes[:, 3] = boxes[:, 3] / ratio
 
-        if not np.any(final_mask):
-            return []
-
-        boxes_final = boxes_filtered[final_mask]
-        class_ids = class_ids[final_mask]
-        confidences = confidences[final_mask]
-
-        # Convert cx,cy,w,h → x,y,w,h (top-left corner)
-        boxes = np.zeros_like(boxes_final)
-        boxes[:, 0] = boxes_final[:, 0] - boxes_final[:, 2] / 2
-        boxes[:, 1] = boxes_final[:, 1] - boxes_final[:, 3] / 2
-        boxes[:, 2] = boxes_final[:, 2]
-        boxes[:, 3] = boxes_final[:, 3]
-
-        # Scale back to original frame size
-        x_scale = w_orig / INPUT_SIZE
-        y_scale = h_orig / INPUT_SIZE
-        boxes[:, 0] *= x_scale
-        boxes[:, 1] *= y_scale
-        boxes[:, 2] *= x_scale
-        boxes[:, 3] *= y_scale
+        # Clip to frame bounds
+        boxes[:, 0] = np.clip(boxes[:, 0], 0, w_orig)
+        boxes[:, 1] = np.clip(boxes[:, 1], 0, h_orig)
+        boxes[:, 2] = np.clip(boxes[:, 2], 0, w_orig)
+        boxes[:, 3] = np.clip(boxes[:, 3], 0, h_orig)
 
         # NMS
         indices = cv2.dnn.NMSBoxes(
@@ -162,12 +173,44 @@ class ObjectDetector:
 
         return detections
 
-    @staticmethod
-    def _preprocess(frame: np.ndarray) -> np.ndarray:
-        """Preprocess frame for YOLOv8: resize, normalize, BGR→RGB, NCHW."""
-        resized = cv2.resize(frame, (INPUT_SIZE, INPUT_SIZE))
-        blob = resized.astype(np.float32) / 255.0
-        blob = blob[:, :, ::-1]  # BGR → RGB
+    def _letterbox(self, frame: np.ndarray) -> tuple:
+        """
+        Letterbox resize: scale image to fit input size while maintaining
+        aspect ratio, padding the shorter side with gray (114).
+
+        Returns:
+            (blob, ratio, (pad_w, pad_h))
+        """
+        h, w = frame.shape[:2]
+        target_h, target_w = self._input_h, self._input_w
+
+        # Scale ratio (new / old)
+        ratio = min(target_w / w, target_h / h)
+        new_w = int(round(w * ratio))
+        new_h = int(round(h * ratio))
+
+        # Padding
+        pad_w = (target_w - new_w) / 2
+        pad_h = (target_h - new_h) / 2
+
+        # Resize
+        resized = cv2.resize(frame, (new_w, new_h), interpolation=cv2.INTER_LINEAR)
+
+        # Pad to target size
+        top = int(round(pad_h - 0.1))
+        bottom = int(round(pad_h + 0.1))
+        left = int(round(pad_w - 0.1))
+        right = int(round(pad_w + 0.1))
+        padded = cv2.copyMakeBorder(resized, top, bottom, left, right,
+                                     cv2.BORDER_CONSTANT, value=(114, 114, 114))
+
+        # Ensure exact size (rounding can be off by 1)
+        if padded.shape[:2] != (target_h, target_w):
+            padded = cv2.resize(padded, (target_w, target_h))
+
+        # Normalize and convert BGR→RGB, HWC→CHW
+        blob = padded.astype(np.float32) / 255.0
+        blob = blob[:, :, ::-1]     # BGR → RGB
         blob = blob.transpose(2, 0, 1)  # HWC → CHW
-        blob = np.expand_dims(blob, axis=0)  # (1, 3, 640, 640)
-        return np.ascontiguousarray(blob)
+        blob = np.expand_dims(blob, 0)  # (1, 3, H, W)
+        return np.ascontiguousarray(blob), ratio, (pad_w, pad_h)

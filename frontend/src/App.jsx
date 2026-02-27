@@ -153,16 +153,16 @@ function App() {
             return 'dark'; // Signal camera is off
         }
 
-        canvas.width = video.videoWidth;
-        canvas.height = video.videoHeight;
+        canvas.width = 480;
+        canvas.height = 360;
         const ctx = canvas.getContext('2d');
-        ctx.drawImage(video, 0, 0);
+        ctx.drawImage(video, 0, 0, 480, 360);
 
-        // Quick darkness check: sample pixels to detect covered/off camera
-        const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+        // Quick darkness check: sample a few pixels to detect covered/off camera
+        const imageData = ctx.getImageData(0, 0, 480, 360);
         const data = imageData.data;
         let totalBrightness = 0;
-        const sampleCount = 200;
+        const sampleCount = 50;
         const step = Math.max(1, Math.floor(data.length / 4 / sampleCount));
         for (let i = 0; i < sampleCount; i++) {
             const idx = (i * step) * 4;
@@ -173,7 +173,7 @@ function App() {
             return 'dark'; // Frame is too dark — camera blocked
         }
 
-        return canvas.toDataURL('image/jpeg', 0.85);
+        return canvas.toDataURL('image/jpeg', 0.65);
     }, []);
 
     // ── Register Face ──────────────────────────────────────────────────────
@@ -331,7 +331,7 @@ function App() {
 
                     // Frame processed, wait a bit then send next
                     isProcessingFrame = false;
-                    setTimeout(sendFrame, 1500); // 1.5-second self-pacing delay
+                    setTimeout(sendFrame, 2000); // 2-second self-pacing delay
                 }
                 else if (data.type === 'audio_result') {
                     setAudioStatus(data);
@@ -418,7 +418,7 @@ function App() {
 
                 ws.send(JSON.stringify({ type: 'audio', data: b64Audio }));
             }
-        }, 3000);
+        }, 5000);
 
     }, [userId, captureFrame]);
 
